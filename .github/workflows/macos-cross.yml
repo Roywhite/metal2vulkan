@@ -82,6 +82,11 @@ jobs:
           # No linker, Apple SDK, Metal execution or native-Mac claim is made.
           printf '!<arch>\n' > "$RUNNER_TEMP/libjemalloc-cross.a"
           export AARCH64_APPLE_DARWIN_JEMALLOC_OVERRIDE="$RUNNER_TEMP/libjemalloc-cross.a"
+          # objc2's exception bridge intentionally includes no SDK headers;
+          # compile that real Objective-C source for Darwin with Clang.
+          export CC_aarch64_apple_darwin=clang
+          export CFLAGS_aarch64_apple_darwin=--target=aarch64-apple-darwin
+          export AR_aarch64_apple_darwin=llvm-ar
           cargo clippy --locked --target aarch64-apple-darwin --workspace --all-targets \
             --all-features --features reims-vgpu-window/sdl-no-link -- -D warnings
           cargo clippy --locked --target aarch64-apple-darwin --workspace --all-targets \
