@@ -1,0 +1,124 @@
+name: Windows runtime affected regressions
+
+on:
+  push:
+    branches: [steelbrain/pr-ready-verification-20261110]
+    paths: [.github/workflows/runtime-verification.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the job on any rustc warning (unused imports, dead_code, etc.).
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: Runtime affected suites (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin major OS images (not *-latest). Labels from actions/runner-images:
+        #   ubuntu-26.04  — Ubuntu 26.04 LTS
+        #   macos-26      — macOS 26 (arm64 GitHub-hosted runner)
+        os: [ubuntu-26.04, macos-26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3412d520d59a668698a13c5c46b515a954d65e0a
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Install LLVM + SPIR-V tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # llvm: llvm-dis; spirv-tools: spirv-val + the product passthrough path's spirv-as.
+          # lavapipe is the CPU Vulkan ICD for the `m2v_cpu_icd` execution tests and the explicit
+          # `corpus-vulkan --device-type cpu` qualification on GPU-less Linux runners.
+          # vulkan-validationlayers: every engine candidate and L4 run enables
+          # VK_LAYER_KHRONOS_validation and refuses to run without it.
+          sudo apt-get install -y llvm spirv-tools mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
+          command -v llvm-dis
+          command -v spirv-val
+          command -v spirv-as
+          # Ubuntu's llvm is the oldest LLVM the committed `.ll` fixtures are written for:
+          # here the validation test that each assembles with it must run, not skip.
+          echo "METAL2VULKAN_TEST_REQUIRE_PINNED_LLVM=1" >> "$GITHUB_ENV"
+          # Fail setup early if the CPU-ICD steps would have no ICD.
+          shopt -s nullglob
+          icds=(/usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json)
+          echo "Vulkan ICDs: ${icds[*]:-none}"
+          test "${#icds[@]}" -gt 0
+
+      - name: Install LLVM + SPIR-V tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm spirv-tools
+          # llvm is keg-only: not linked into /opt/homebrew/bin. GITHUB_PATH only
+          # affects *later* steps, so export PATH here before command -v probes.
+          export PATH="/opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:${PATH}"
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          command -v llvm-dis
+          command -v spirv-val
+          command -v spirv-as
+
+
+      - name: Confirm exact runtime head
+        run: test "$(git rev-parse HEAD)" = 3412d520d59a668698a13c5c46b515a954d65e0a
+      - name: Affected runtime and devtools suites
+        run: cargo nextest run -p metal2vulkan-runtime -p metal2vulkan-devtools --all-features --all-targets
+      - name: Affected documentation tests
+        run: cargo test -p metal2vulkan-runtime -p metal2vulkan-devtools --all-features --doc
+      - name: Remaining CPU validation and conformance suites
+        run: cargo nextest run -p metal2vulkan-validation -p metal2vulkan-conformance --all-features
+      - name: CPU Vulkan validation
+        if: runner.os == 'Linux'
+        env:
+          RUSTFLAGS: -Dwarnings --cfg m2v_cpu_icd
+          LP_NUM_THREADS: "1"
+        run: cargo nextest run -p metal2vulkan-validation --all-features
+      - name: Compare unmodified upstream NaN failure
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          head=3412d520d59a668698a13c5c46b515a954d65e0a
+          base=219f01365dc4c8eb346816c405b5b17403793764
+          trap 'git checkout --detach "$head"' EXIT
+          # This is a baseline comparison, not a green full-suite claim. Both
+          # real test invocations must fail with the exact same assertion.
+          for revision in "$head" "$base"; do
+            git checkout --detach "$revision"
+            log="$RUNNER_TEMP/nan-$revision.log"
+            set +e
+            cargo nextest run -p metal2vulkan --all-features \
+              -E 'test(=tests::engine_arith::a_division_without_arcp_is_the_devices_quotient)' > "$log" 2>&1
+            result=$?
+            set -e
+            cat "$log"
+            test "$result" -eq 100
+            grep -F 'divide_zero_by_zero on moltenvk-m3: 0xffc00000' "$log"
+          done
+          echo 'Same pre-existing Linux NaN assertion reproduced on PR head and upstream base.'
