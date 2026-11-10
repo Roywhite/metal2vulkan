@@ -1,9 +1,12 @@
-name: CI
+name: Windows port cross-platform verification
 
 on:
   push:
-    branches: [main, master]
-  pull_request:
+    branches: [steelbrain/pr-ready-verification-20261110]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -241,3 +244,85 @@ jobs:
           set -euo pipefail
           cargo build -p metal2vulkan-validation --bins
           bash scripts/qualify-public-cases target/debug
+
+  host-regressions:
+    name: Reims stable API (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+    defaults:
+      run:
+        shell: bash
+        working-directory: host
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/host-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Roywhite/reims-vgpu
+          ref: 47e34859a121a6d6068b7076d765443ef36f4b57
+          path: host
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-gnu,x86_64-apple-darwin
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cbindgen@0.29.4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm spirv-tools cmake ninja-build pkg-config python3-venv python3-pip libglib2.0-dev libpixman-1-dev zlib1g-dev libvulkan-dev mesa-vulkan-drivers libva-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm lld spirv-tools
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+      - name: Confirm exact sources and dependency
+        run: |
+          test "$(git rev-parse HEAD)" = 47e34859a121a6d6068b7076d765443ef36f4b57
+          cargo metadata --format-version 1 > "$RUNNER_TEMP/host-metadata.json"
+          python3 - <<'PY'
+          import json, os
+          metadata = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'host-metadata.json')))
+          runtime = next(p for p in metadata['packages'] if p['name'] == 'metal2vulkan-runtime')
+          assert runtime['source'].endswith('#3412d520d59a668698a13c5c46b515a954d65e0a'), runtime['source']
+          print('Verified public runtime dependency:', runtime['source'])
+          PY
+      - name: Upstream library gates
+        run: |
+          ulimit -c 0
+          cargo xtask check
+      - name: Build C API against real public dependency
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo build -p reims-vgpu-c --no-default-features --features vulkan
+          else
+            cargo build -p reims-vgpu-c
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: Roywhite/qemu-reims-vgpu
+          ref: 105fcf56f9b42b7cbfd03c87264b907446c5dc3c
+          path: qemu
+          persist-credentials: false
+      - name: Build matched Unix SDK and QEMU
+        run: |
+          cargo xtask dist --profile dev --out "$RUNNER_TEMP/reims-sdk"
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/reims-sdk/lib/pkgconfig"
+          mkdir -p "$GITHUB_WORKSPACE/qemu-build"
+          cd "$GITHUB_WORKSPACE/qemu-build"
+          if [ "$RUNNER_OS" = macOS ]; then
+            target=aarch64-softmmu
+          else
+            target=x86_64-softmmu
+          fi
+          ../qemu/configure --target-list="$target" --enable-pvg --disable-docs --disable-tools --disable-rust --disable-cocoa --disable-linux-user --disable-bsd-user
+          ninja -j2
