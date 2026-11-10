@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Roywhite/reims-vgpu
-          ref: 3833bf2b3f659d2786f0ca0b4716a92e78619d66
+          ref: a469abff23c2447daddfd58845cafddd98ea7e57
           path: host
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
@@ -60,22 +60,15 @@ jobs:
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
       - name: Confirm exact sources and dependency
         run: |
-          test "$(git rev-parse HEAD)" = 3833bf2b3f659d2786f0ca0b4716a92e78619d66
+          test "$(git rev-parse HEAD)" = a469abff23c2447daddfd58845cafddd98ea7e57
           cargo metadata --format-version 1 > "$RUNNER_TEMP/host-metadata.json"
           python3 - <<'PY'
           import json, os
           metadata = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'host-metadata.json')))
           runtime = next(p for p in metadata['packages'] if p['name'] == 'metal2vulkan-runtime')
-          assert runtime['source'].endswith('#3412d520d59a668698a13c5c46b515a954d65e0a'), runtime['source']
+          assert runtime['source'].endswith('#a0058f220635342f22451d9a59b592de5af10068'), runtime['source']
           print('Verified public runtime dependency:', runtime['source'])
           PY
-      - name: Permit large virtual test fixtures
-        if: runner.os == 'Linux'
-        run: |
-          # Two existing fault-boundary tests reserve 32 GiB of zero pages;
-          # they do not require that much resident RAM. Only this disposable
-          # CI runner's commitment policy changes, never the user's host.
-          sudo sysctl -w vm.overcommit_memory=1
       - name: Upstream library gates
         id: upstream
         continue-on-error: true
@@ -111,9 +104,11 @@ jobs:
 
       - name: Isolate GPU-sensitive tests on head and upstream base
         if: runner.os == 'Linux'
+        id: gpu_sensitive
+        continue-on-error: true
         run: |
           set -euo pipefail
-          head=3833bf2b3f659d2786f0ca0b4716a92e78619d66
+          head=a469abff23c2447daddfd58845cafddd98ea7e57
           base=1fe0acb68b287db36f1e6c7b9f45383940b8a76f
           git fetch --depth=1 origin "$base"
           trap 'git checkout --detach "$head"' EXIT
@@ -127,9 +122,11 @@ jobs:
             set -e
             cat "$log"
             echo "GPU-sensitive outcome for $revision: $result"
+            if [ "$revision" = "$head" ]; then head_result=$result; fi
           done
+          test "$head_result" -eq 0
       - name: Preserve genuine upstream gate outcome
-        if: steps.upstream.outcome != 'success'
+        if: always() && (steps.upstream.outcome != 'success' || steps.gpu_sensitive.outcome == 'failure')
         run: |
           echo 'The upstream gate failed; downstream build evidence does not override it.'
           exit 1
