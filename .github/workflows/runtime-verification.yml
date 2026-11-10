@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 3412d520d59a668698a13c5c46b515a954d65e0a
+          ref: a0058f220635342f22451d9a59b592de5af10068
           fetch-depth: 2
           persist-credentials: false
 
@@ -87,38 +87,45 @@ jobs:
 
 
       - name: Confirm exact runtime head
-        run: test "$(git rev-parse HEAD)" = 3412d520d59a668698a13c5c46b515a954d65e0a
+        run: test "$(git rev-parse HEAD)" = a0058f220635342f22451d9a59b592de5af10068
       - name: Affected runtime and devtools suites
         run: cargo nextest run -p metal2vulkan-runtime -p metal2vulkan-devtools --all-features --all-targets
       - name: Affected documentation tests
         run: cargo test -p metal2vulkan-runtime -p metal2vulkan-devtools --all-features --doc
-      - name: Remaining CPU validation and conformance suites
-        run: cargo nextest run -p metal2vulkan-validation -p metal2vulkan-conformance --all-features
-      - name: CPU Vulkan validation
-        if: runner.os == 'Linux'
-        env:
-          RUSTFLAGS: -Dwarnings --cfg m2v_cpu_icd
-          LP_NUM_THREADS: "1"
-        run: cargo nextest run -p metal2vulkan-validation --all-features
-      - name: Compare unmodified upstream NaN failure
-        if: runner.os == 'Linux'
+      - name: Compare unrelated failure on head and upstream base
         run: |
           set -euo pipefail
-          head=3412d520d59a668698a13c5c46b515a954d65e0a
+          head=a0058f220635342f22451d9a59b592de5af10068
           base=219f01365dc4c8eb346816c405b5b17403793764
           trap 'git checkout --detach "$head"' EXIT
+          if [ "$RUNNER_OS" = Linux ]; then
+            package=metal2vulkan
+            selector='test(=tests::engine_arith::a_division_without_arcp_is_the_devices_quotient)'
+            expected='divide_zero_by_zero on moltenvk-m3: 0xffc00000'
+          else
+            package=metal2vulkan-air
+            selector='test(=container::tests::committed_air_fixtures_parse_and_link)'
+            expected='air version set to 2.9.0'
+          fi
           # This is a baseline comparison, not a green full-suite claim. Both
           # real test invocations must fail with the exact same assertion.
           for revision in "$head" "$base"; do
             git checkout --detach "$revision"
             log="$RUNNER_TEMP/nan-$revision.log"
             set +e
-            cargo nextest run -p metal2vulkan --all-features \
-              -E 'test(=tests::engine_arith::a_division_without_arcp_is_the_devices_quotient)' > "$log" 2>&1
+            cargo nextest run -p "$package" --all-features -E "$selector" > "$log" 2>&1
             result=$?
             set -e
             cat "$log"
             test "$result" -eq 100
-            grep -F 'divide_zero_by_zero on moltenvk-m3: 0xffc00000' "$log"
+            grep -F "$expected" "$log"
           done
-          echo 'Same pre-existing Linux NaN assertion reproduced on PR head and upstream base.'
+          echo 'Same unrelated platform assertion reproduced on PR head and upstream base.'
+      - name: Remaining CPU validation and conformance suites
+        run: cargo nextest run -p metal2vulkan-validation -p metal2vulkan-conformance --all-features --no-fail-fast
+      - name: CPU Vulkan validation
+        if: runner.os == 'Linux'
+        env:
+          RUSTFLAGS: -Dwarnings --cfg m2v_cpu_icd
+          LP_NUM_THREADS: "1"
+        run: cargo nextest run -p metal2vulkan-validation --all-features --no-fail-fast
