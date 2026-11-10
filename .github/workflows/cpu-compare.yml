@@ -1,0 +1,131 @@
+name: CPU Vulkan failure comparison
+
+on:
+  push:
+    branches: [steelbrain/pr-ready-verification-20261110]
+    paths: [.github/workflows/cpu-compare.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the job on any rustc warning (unused imports, dead_code, etc.).
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: Serial CPU ICD head and base
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin major OS images (not *-latest). Labels from actions/runner-images:
+        #   ubuntu-26.04  — Ubuntu 26.04 LTS
+        #   macos-26      — macOS 26 (arm64 GitHub-hosted runner)
+        os: [ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a0058f220635342f22451d9a59b592de5af10068
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Install LLVM + SPIR-V tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # llvm: llvm-dis; spirv-tools: spirv-val + the product passthrough path's spirv-as.
+          # lavapipe is the CPU Vulkan ICD for the `m2v_cpu_icd` execution tests and the explicit
+          # `corpus-vulkan --device-type cpu` qualification on GPU-less Linux runners.
+          # vulkan-validationlayers: every engine candidate and L4 run enables
+          # VK_LAYER_KHRONOS_validation and refuses to run without it.
+          sudo apt-get install -y llvm spirv-tools mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
+          command -v llvm-dis
+          command -v spirv-val
+          command -v spirv-as
+          # Ubuntu's llvm is the oldest LLVM the committed `.ll` fixtures are written for:
+          # here the validation test that each assembles with it must run, not skip.
+          echo "METAL2VULKAN_TEST_REQUIRE_PINNED_LLVM=1" >> "$GITHUB_ENV"
+          # Fail setup early if the CPU-ICD steps would have no ICD.
+          shopt -s nullglob
+          icds=(/usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json)
+          echo "Vulkan ICDs: ${icds[*]:-none}"
+          test "${#icds[@]}" -gt 0
+
+      - name: Install LLVM + SPIR-V tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install llvm spirv-tools
+          # llvm is keg-only: not linked into /opt/homebrew/bin. GITHUB_PATH only
+          # affects *later* steps, so export PATH here before command -v probes.
+          export PATH="/opt/homebrew/opt/llvm/bin:/usr/local/opt/llvm/bin:${PATH}"
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          command -v llvm-dis
+          command -v spirv-val
+          command -v spirv-as
+
+
+
+      - name: Compare observed CPU ICD failures serially
+        env:
+          RUSTFLAGS: -Dwarnings --cfg m2v_cpu_icd
+          LP_NUM_THREADS: "1"
+        run: |
+          set -euo pipefail
+          head=a0058f220635342f22451d9a59b592de5af10068
+          base=219f01365dc4c8eb346816c405b5b17403793764
+          git fetch --depth=1 origin "$base"
+          trap 'git checkout --detach "$head"' EXIT
+          selector='test(=runtime_lane::bfloat_targets::bfloat_draws_store_metal_s_codes) | test(=runtime_lane::color_writes::partly_masked_packed_formats_keep_their_fields) | test(=runtime_lane::color_writes::draws_store_metals_codes) | test(=runtime_lane::dispatch_executions::each_command_runs_its_own_state_and_group_count) | test(=runtime_lane::extended_range_planes::two_extended_range_planes_join_and_split_as_metal_does) | test(=runtime_lane::extended_range_blends::blends_of_half_outputs_into_extended_range_texels) | test(=runtime_lane::extended_range_targets::draws_store_metals_extended_range_texels) | test(=runtime_lane::extended_range_targets::clears_store_metals_extended_range_texels) | test(=runtime_lane::extended_range_two_planes::plane_views_over_a_buffer_read_and_write_as_metal_does)'
+          for revision in "$head" "$base"; do
+            git checkout --detach "$revision"
+            log="$RUNNER_TEMP/cpu-$revision.log"
+            set +e
+            cargo nextest run -p metal2vulkan-validation --all-features \
+              --no-fail-fast --test-threads 1 -E "$selector" > "$log" 2>&1
+            result=$?
+            set -e
+            # Retain the failure status. Summarize giant texel diagnostics so
+            # the actual assertion and test identities remain readable.
+            python3 - "$log" <<'PY'
+          import re, sys
+          from pathlib import Path
+          text = re.sub(r"\x1b\[[0-9;]*m", "", Path(sys.argv[1]).read_text())
+          lines = text.splitlines()
+          failures = sorted(set(re.findall(r"FAIL \[.*?\] \(\d+/\d+\) metal2vulkan-validation (\S+)", text)))
+          Path(sys.argv[1] + ".failures").write_text("\n".join(failures) + "\n")
+          print("Failing tests:", *failures, sep="\n")
+          for index, line in enumerate(lines):
+              if "panicked at" in line:
+                  print("\n".join(part[:700] for part in lines[index:index+5]))
+          print("\n".join(line[:700] for line in lines if "Summary [" in line))
+          if not failures:
+              print("\n".join(lines[-30:]))
+          PY
+            test "$result" -eq 100
+          done
+          diff -u "$RUNNER_TEMP/cpu-$head.log.failures" "$RUNNER_TEMP/cpu-$base.log.failures"
+          test "$(wc -l < "$RUNNER_TEMP/cpu-$head.log.failures")" -eq 9
+          echo 'All nine observed CPU ICD failures also fail serially on the upstream base.'
