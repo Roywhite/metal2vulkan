@@ -97,6 +97,7 @@ jobs:
           set -euo pipefail
           head=a0058f220635342f22451d9a59b592de5af10068
           base=219f01365dc4c8eb346816c405b5b17403793764
+          git fetch --depth=1 origin "$base"
           trap 'git checkout --detach "$head"' EXIT
           if [ "$RUNNER_OS" = Linux ]; then
             package=metal2vulkan
