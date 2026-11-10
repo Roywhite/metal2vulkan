@@ -1,0 +1,90 @@
+name: macOS Rust cross-check
+
+on:
+  push:
+    branches: [steelbrain/pr-ready-verification-20261110]
+    paths: [.github/workflows/macos-cross.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  host-regressions:
+    name: macOS Rust types from Linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04]
+    defaults:
+      run:
+        shell: bash
+        working-directory: host
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/host-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Roywhite/reims-vgpu
+          ref: 728040b8293b3ee01710bd67dbbcdc21d1cc6fe6
+          path: host
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-gnu,x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: host -> ../host-target
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cbindgen@0.29.4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm spirv-tools cmake ninja-build pkg-config python3-venv python3-pip libglib2.0-dev libpixman-1-dev zlib1g-dev libvulkan-dev mesa-vulkan-drivers libva-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libwayland-bin wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdbus-1-dev libfdt-dev flex bison libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm lld spirv-tools
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+      - name: Confirm exact sources and dependency
+        run: |
+          test "$(git rev-parse HEAD)" = 728040b8293b3ee01710bd67dbbcdc21d1cc6fe6
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/host-metadata.json"
+          python3 - <<'PY'
+          import json, os
+          metadata = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'host-metadata.json')))
+          runtime = next(p for p in metadata['packages'] if p['name'] == 'metal2vulkan-runtime')
+          assert runtime['source'].endswith('#a0058f220635342f22451d9a59b592de5af10068'), runtime['source']
+          print('Verified public runtime dependency:', runtime['source'])
+          PY
+
+      - name: Confirm locked resolution and public ABI
+        run: |
+          git diff --exit-code -- Cargo.toml Cargo.lock
+          cargo xtask header --check
+      - name: Type-check macOS Rust code without linking
+        run: |
+          set -euo pipefail
+          # Match xtask's existing cross-check seam: SDL's no-link feature
+          # and a valid empty archive avoid building foreign C dependencies.
+          # No linker, Apple SDK, Metal execution or native-Mac claim is made.
+          printf '!<arch>\n' > "$RUNNER_TEMP/libjemalloc-cross.a"
+          export AARCH64_APPLE_DARWIN_JEMALLOC_OVERRIDE="$RUNNER_TEMP/libjemalloc-cross.a"
+          cargo clippy --locked --target aarch64-apple-darwin --workspace --all-targets \
+            --all-features --features reims-vgpu-window/sdl-no-link -- -D warnings
+          cargo clippy --locked --target aarch64-apple-darwin --workspace --all-targets \
+            --no-default-features \
+            --features reims-vgpu-core/testkit,reims-vgpu/testkit,reims-vgpu/vulkan,reims-vgpu-window/sdl-no-link \
+            -- -D warnings
