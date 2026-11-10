@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Roywhite/reims-vgpu
-          ref: 778a174220f15f29dd5acf4a2c7fb2c72bbdc417
+          ref: 3833bf2b3f659d2786f0ca0b4716a92e78619d66
           path: host
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
@@ -60,7 +60,7 @@ jobs:
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
       - name: Confirm exact sources and dependency
         run: |
-          test "$(git rev-parse HEAD)" = 778a174220f15f29dd5acf4a2c7fb2c72bbdc417
+          test "$(git rev-parse HEAD)" = 3833bf2b3f659d2786f0ca0b4716a92e78619d66
           cargo metadata --format-version 1 > "$RUNNER_TEMP/host-metadata.json"
           python3 - <<'PY'
           import json, os
@@ -69,7 +69,16 @@ jobs:
           assert runtime['source'].endswith('#3412d520d59a668698a13c5c46b515a954d65e0a'), runtime['source']
           print('Verified public runtime dependency:', runtime['source'])
           PY
+      - name: Permit large virtual test fixtures
+        if: runner.os == 'Linux'
+        run: |
+          # Two existing fault-boundary tests reserve 32 GiB of zero pages;
+          # they do not require that much resident RAM. Only this disposable
+          # CI runner's commitment policy changes, never the user's host.
+          sudo sysctl -w vm.overcommit_memory=1
       - name: Upstream library gates
+        id: upstream
+        continue-on-error: true
         run: |
           ulimit -c 0
           cargo xtask check
@@ -99,3 +108,28 @@ jobs:
           fi
           ../qemu/configure --target-list="$target" --enable-pvg --disable-docs --disable-tools --disable-rust --disable-cocoa --disable-linux-user --disable-bsd-user
           ninja -j2
+
+      - name: Isolate GPU-sensitive tests on head and upstream base
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          head=3833bf2b3f659d2786f0ca0b4716a92e78619d66
+          base=1fe0acb68b287db36f1e6c7b9f45383940b8a76f
+          git fetch --depth=1 origin "$base"
+          trap 'git checkout --detach "$head"' EXIT
+          for revision in "$head" "$base"; do
+            git checkout --detach "$revision"
+            log="$RUNNER_TEMP/gpu-sensitive-$revision.log"
+            set +e
+            cargo nextest run -p reims-vgpu-vulkan --lib --no-fail-fast --test-threads 1 \
+              -E 'test(=gpu::caps::tests::simd_flags_answer_the_runtimes_family_rows) | test(=gpu::device::tests::a_released_surface_texture_keeps_the_surfaces_memory_while_imported) | test(=gpu::paging_discard::a_discarded_multisampled_texture_keeps_its_transfer_buffer_until_the_write_back_completed)' > "$log" 2>&1
+            result=$?
+            set -e
+            cat "$log"
+            echo "GPU-sensitive outcome for $revision: $result"
+          done
+      - name: Preserve genuine upstream gate outcome
+        if: steps.upstream.outcome != 'success'
+        run: |
+          echo 'The upstream gate failed; downstream build evidence does not override it.'
+          exit 1
