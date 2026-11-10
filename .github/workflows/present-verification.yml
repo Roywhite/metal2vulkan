@@ -1,0 +1,83 @@
+name: Reims presentation source regression
+
+on:
+  push:
+    branches: [steelbrain/pr-ready-verification-20261110]
+    paths: [.github/workflows/present-verification.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  present-regressions:
+    name: Vulkan presentation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+    defaults:
+      run:
+        shell: bash
+        working-directory: host
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/host-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Roywhite/reims-vgpu
+          ref: 37e50688e35d101e7042f189033b4e70a7355309
+          path: host
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-gnu,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: host -> ../host-target
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cbindgen@0.29.4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm spirv-tools cmake ninja-build pkg-config python3-venv python3-pip libglib2.0-dev libpixman-1-dev zlib1g-dev libvulkan-dev mesa-vulkan-drivers libva-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libwayland-bin wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdbus-1-dev libfdt-dev flex bison libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm lld spirv-tools
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+      - name: Confirm exact sources and dependency
+        run: |
+          test "$(git rev-parse HEAD)" = 37e50688e35d101e7042f189033b4e70a7355309
+          cargo metadata --format-version 1 > "$RUNNER_TEMP/host-metadata.json"
+          python3 - <<'PY'
+          import json, os
+          metadata = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'host-metadata.json')))
+          runtime = next(p for p in metadata['packages'] if p['name'] == 'metal2vulkan-runtime')
+          assert runtime['source'].endswith('#3412d520d59a668698a13c5c46b515a954d65e0a'), runtime['source']
+          print('Verified public runtime dependency:', runtime['source'])
+          PY
+      - name: Format and public ABI drift
+        run: |
+          cargo fmt --all -- --check
+          cargo xtask header --check
+      - name: Vulkan strict clippy
+        run: cargo clippy -p reims-vgpu-vulkan --all-targets -- -D warnings
+      - name: Vulkan library regressions
+        run: |
+          ulimit -c 0
+          cargo nextest run -p reims-vgpu-vulkan --lib
+      - name: Build Vulkan C API
+        run: cargo build -p reims-vgpu-c --no-default-features --features vulkan
