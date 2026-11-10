@@ -1,8 +1,6 @@
 name: Windows port cross-platform verification
 
 on:
-  push:
-    branches: [steelbrain/pr-ready-verification-20261110]
   workflow_dispatch:
 
 permissions:
