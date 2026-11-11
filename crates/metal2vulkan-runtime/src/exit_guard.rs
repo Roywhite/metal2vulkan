@@ -373,7 +373,7 @@ impl CalledWords {
     }
 
     /// The bits set.
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, any(unix, m2v_gpu, m2v_cpu_icd)))]
     fn load(&self) -> Calls {
         Calls(std::array::from_fn(|at| self.0[at].load(Ordering::Relaxed)))
     }
