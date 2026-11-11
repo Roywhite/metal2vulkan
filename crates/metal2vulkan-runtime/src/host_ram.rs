@@ -164,7 +164,7 @@ use super::host_memory::{
     RunResolver,
 };
 use super::host_residency;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::host_residency::Again;
 use super::memory::{ImportFailure, Mapped, MemoryClass, Placement};
 use super::program_objects::ProgramObject;
@@ -1823,7 +1823,7 @@ impl RamChunk {
     /// The import of the RAM's dma-buf of the span, with the RAM's source, where the chunk is
     /// one: what a texture over an object bound in it makes the image of its own pages from
     /// (`dma_buf.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn dma_buf_pages(&self) -> Option<&Arc<crate::dma_buf::DmaBufPages>> {
         self.placement.dma_buf_pages()
     }
@@ -1849,7 +1849,7 @@ impl Drop for RamChunk {
         // (`freed_memory.rs`), and the RAM with it. An import of a dma-buf is freed as the
         // placement drops, after this: the RAM waits for that free.
         let after = lock(&shared.memory).release_then(shared.vk(), &self.placement, after);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let after = match (after, self.placement.dma_buf_pages()) {
             (Some(after), Some(imports)) => {
                 imports.after_free(after);
@@ -2211,7 +2211,7 @@ impl Device {
     /// while idle (`host_residency.rs`), bound again in the run's chunk's import as `again`
     /// says (its window and length), as at its making ([`Device::bind_in`]): `None` where the
     /// chunk is not imported, or the buffer cannot be bound in it.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn ram_run_in_chunk(&self, run: &RunAgain, again: &Again) -> Option<Pages> {
         let chunk = run.ram.made(run.slot)?;
         // SAFETY: the window's pages are the bytes of the run in the RAM, as at the buffer's
@@ -2233,7 +2233,7 @@ impl Device {
     /// ([`RamOnDevice::run_alone`]: the chunk's import where it is made, the device's thread
     /// asked for it where not), never the chunk's own import nor a wait for one. Refused as the
     /// run's import is, or with the device lost.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn ram_run_alone_again(
         &self,
         run: &RunAgain,
@@ -2674,7 +2674,15 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod unix;
+    #[cfg(unix)]
+    use unix as pages;
+    #[cfg(windows)]
+    mod windows;
     use super::*;
+    #[cfg(windows)]
+    use windows as pages;
 
     const PAGE: u64 = 4096;
 
@@ -2948,17 +2956,7 @@ mod tests {
         let full = AHEAD_CHUNKS;
         let length = (full as u64 + 3) * CHUNK_BYTES;
         // SAFETY: a fresh anonymous mapping that reserves no memory until touched.
-        let start = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                length as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(start, libc::MAP_FAILED);
+        let start = pages::map(length);
         let at = NonNull::new(start.cast::<u8>()).unwrap();
         // SAFETY: the mapping is readable and writable until the end of the test, and nothing
         // imports it.
@@ -3026,7 +3024,7 @@ mod tests {
         assert_eq!(asked.next_ahead(), None);
         drop((on, fresh, last, asked, ram));
         // SAFETY: the test's mapping, which nothing uses any more.
-        unsafe { libc::munmap(start, length as usize) };
+        unsafe { pages::free(start, length) };
     }
 
     #[test]
@@ -3034,17 +3032,7 @@ mod tests {
         // Four long chunks of address space mapped and never touched (no device imports them).
         let length = 4 * CHUNK_BYTES;
         // SAFETY: a fresh anonymous mapping that reserves no memory until touched.
-        let start = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                length as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(start, libc::MAP_FAILED);
+        let start = pages::map(length);
         let at = NonNull::new(start.cast::<u8>()).unwrap();
         // SAFETY: the mapping is readable and writable until the end of the test, and nothing
         // imports it.
@@ -3081,7 +3069,7 @@ mod tests {
         assert_eq!(on.next_asked(), None, "those asks were answered");
         drop((on, ram));
         // SAFETY: the test's mapping, which nothing uses any more.
-        unsafe { libc::munmap(start, length as usize) };
+        unsafe { pages::free(start, length) };
     }
 
     #[test]
@@ -3112,17 +3100,7 @@ mod tests {
         // SAFETY: the descriptor was just made, and is closed below.
         assert_eq!(unsafe { libc::ftruncate(fd, length as libc::off_t) }, 0);
         // SAFETY: a fresh mapping of the file.
-        let start = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                length,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        assert_ne!(start, libc::MAP_FAILED);
+        let start = pages::map(length);
         // SAFETY: the test's descriptor; the mapping keeps the file.
         unsafe { libc::close(fd) };
         // SAFETY: the test's own mapping, which nothing uses once the caller unmaps it.

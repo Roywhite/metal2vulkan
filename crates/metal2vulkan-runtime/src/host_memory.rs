@@ -43,7 +43,7 @@
 //!   imports a host pointer through amdgpu's userptr, which the kernel takes only over anonymous
 //!   pages. Mesa 26.2.4 answers `VK_ERROR_INVALID_EXTERNAL_HANDLE`, 26.0.8 `VK_ERROR_UNKNOWN`, and
 //!   both are refusals ([`import_refused`]). NVIDIA and lavapipe imported the same shared memory.
-//! - **Dma-bufs of the pages** ([`HostMemory::with_dma_buf`]), the last import before a copy
+//! - **Dma-bufs of the pages** (`HostMemory::with_dma_buf`), the last import before a copy
 //!   or a refusal: where the device refuses the pointer ([`refused`]: the import window, the buffer's
 //!   binding in it, the memory types, the driver, or the runtime for a driver that breaks on
 //!   pages the kernel cannot pin, [`unpinnable`]) and imports dma-bufs, the buffer is bound in
@@ -103,7 +103,7 @@
 
 use super::device::lock;
 use super::dirty_pages::{hook, DirtyHook, DirtyPages, DirtySource};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::dma_buf::DmaBufSource;
 use super::error::{vulkan, Error};
 use super::exit_guard;
@@ -121,7 +121,7 @@ use std::sync::{Arc, Mutex};
 /// Host memory a buffer or heap wraps without a copy: a pointer whose bytes the caller vouches for
 /// (the `pointer` of `newBufferWithBytesNoCopy:length:options:deallocator:`), and, as runtime
 /// extensions, a source of dma-bufs of its pages for a device that refuses the pointer itself
-/// ([`HostMemory::with_dma_buf`]) and a log of the writes to its pages
+/// (`HostMemory::with_dma_buf`) and a log of the writes to its pages
 /// ([`HostMemory::with_dirty_pages`]).
 pub struct HostMemory {
     pointer: NonNull<u8>,
@@ -207,11 +207,11 @@ unsafe impl Sync for ImportRequest {}
 
 /// What a [`HostMemory`] may carry besides its pointer: a [`DmaBufSource`] where the system has
 /// file descriptors, nothing elsewhere.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) type Source = DmaBufSource;
 
 /// What a [`HostMemory`] may carry besides its pointer: nothing on this system.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub(super) type Source = std::convert::Infallible;
 
 // SAFETY: a `HostMemory` is an address and the caller's guarantee for it (`HostMemory::new`),
@@ -256,7 +256,7 @@ impl HostMemory {
     ///
     /// On Linux a buffer over a page this process maps without write permission is a copy of the
     /// pages whose GPU writes are dropped, as Metal drops them (`copied-host-pages`), with or
-    /// without a dma-buf source ([`HostMemory::with_dma_buf`]), which is never called for them:
+    /// without a dma-buf source (`HostMemory::with_dma_buf`), which is never called for them:
     /// Linux drivers pin imported pages for writing (one, ANV, imported a read-only page and then
     /// lost the device at the GPU's first read), and a dma-buf of them would take the GPU's
     /// writes. So on Linux the pages also stay writable while they are imported: RADV failed every
@@ -265,7 +265,7 @@ impl HostMemory {
     /// imported. Some drivers also
     /// refuse shared memory (RADV refused anonymous shared memory and mappings of shared memory
     /// objects, `memfd` mappings among them); private memory imports everywhere measured.
-    /// [`HostMemory::with_dma_buf`] imports such memory where the device imports dma-bufs; a
+    /// `HostMemory::with_dma_buf` imports such memory where the device imports dma-bufs; a
     /// no-copy buffer or heap over it made without one is a copy of the pages, announced
     /// (`copied-host-pages`), and a rebind to it is refused.
     pub unsafe fn new(pointer: NonNull<u8>) -> HostMemory {
@@ -324,7 +324,7 @@ impl HostMemory {
     /// is asked for, in order (then padding, [`DmaBufRequest`](crate::DmaBufRequest)), the same
     /// pieces of the same files for every request over the same pages, so that the GPU's bytes,
     /// the buffer's and its textures', are the CPU's.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub unsafe fn with_dma_buf(pointer: NonNull<u8>, source: DmaBufSource) -> HostMemory {
         HostMemory {
             pointer,
@@ -346,7 +346,7 @@ impl HostMemory {
     ///
     /// # Safety
     ///
-    /// As well as [`HostMemory::new`]'s contract (or [`HostMemory::with_dma_buf`]'s): every host
+    /// As well as [`HostMemory::new`]'s contract (or `HostMemory::with_dma_buf`'s): every host
     /// page the buffer's bytes touch is mapped by this process with write permission when the
     /// buffer (or heap, or rebind) is made over them, and stays so while they are imported. The
     /// Vulkan import of a page the process cannot write is undefined on drivers that pin pages
@@ -462,7 +462,7 @@ impl HostMemory {
     /// imports and whose pages a driver may also take by their pointer (an allocation of the
     /// device's own, exported and mapped). Without a source the device can use, the import is
     /// refused as the pointer's would be (`Unsupported`, `HostMemory`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn dma_buf_only(self) -> HostMemory {
         HostMemory {
             dma_buf_only: true,
@@ -666,7 +666,12 @@ pub(super) fn host_page() -> Option<u64> {
 }
 
 /// The host's page size, where the runtime knows how to ask for it: not on this system.
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub(super) fn host_page() -> Option<u64> {
+    crate::windows_memory::host_page()
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(super) fn host_page() -> Option<u64> {
     None
 }
@@ -779,7 +784,12 @@ pub(super) fn mapped_readable(start: u64, end: u64) -> bool {
 }
 
 /// [`mapped_readable`] where the runtime does not ask the system for its mappings: `false`.
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub(super) fn mapped_readable(start: u64, end: u64) -> bool {
+    crate::windows_memory::permitted(start, end, false)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub(super) fn mapped_readable(_start: u64, _end: u64) -> bool {
     false
 }
@@ -848,7 +858,12 @@ pub(super) fn mapped_writable(start: u64, end: u64) -> bool {
 
 /// [`mapped_writable`] where the runtime does not ask the system for its mappings: `false` (and no
 /// copy is made here: the runtime reads no caller's page, [`mapped_readable`]).
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+pub(super) fn mapped_writable(start: u64, end: u64) -> bool {
+    crate::windows_memory::permitted(start, end, true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn mapped_writable(_start: u64, _end: u64) -> bool {
     false
 }
@@ -988,7 +1003,7 @@ const PROCMAP_QUERY_VMA_SHARED: u64 = 0x08;
 /// it, `ENOTTY` before Linux 6.11), or `None` for an answer that does not cover `address`.
 #[cfg(target_os = "linux")]
 fn mapping_at(maps: &std::fs::File, address: u64) -> Result<ProcmapQuery, Option<i32>> {
-    use std::os::fd::AsRawFd;
+    use crate::fd::AsRawFd;
     let mut query = ProcmapQuery {
         size: std::mem::size_of::<ProcmapQuery>() as u64,
         query_addr: address,
@@ -1068,7 +1083,26 @@ pub(super) fn queried_permitted(
 
 /// Refuse the window's pages unless the process can write them: no check off Linux (MoltenVK
 /// hands the range to Metal, which reads read-only pages).
-#[cfg(not(target_os = "linux"))]
+/// Windows imports may grant the GPU write access: refuse read-only CPU mappings before
+/// handing them to a Vulkan driver. The copied path retains the caller's write permissions.
+#[cfg(windows)]
+pub(super) fn refuse_unwritable(window: &ImportWindow, counts: &Counters) -> Result<(), Error> {
+    let mut asked = 0;
+    let writable = crate::windows_memory::permitted_counted(
+        window.start,
+        window.start + window.size,
+        true,
+        &mut asked,
+    );
+    counts.host_mappings_queried(asked);
+    if writable {
+        Ok(())
+    } else {
+        Err(not_importable())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn refuse_unwritable(_window: &ImportWindow, _counts: &Counters) -> Result<(), Error> {
     Ok(())
 }
@@ -1132,11 +1166,13 @@ pub(super) struct Importer {
     dma_buf: Option<ash::khr::external_memory_fd::DeviceFn>,
     /// Whether the device also enables the route's image extensions (`create.rs`'s
     /// `dma_buf_image_names`), for images of textures over dma-buf pages (`dma_buf.rs`).
+    #[cfg(any(unix, windows))]
     dma_buf_images: bool,
     /// The granule a dma-buf source's chunks split at, where the device assembles a buffer of
     /// several (`dma_buf.rs`): the alignment of a sparse buffer made for dma-bufs. Asked once,
     /// the first time a pointer is refused and a source called; `None` where the device makes no
     /// such buffer.
+    #[cfg(any(unix, windows))]
     pub(super) sparse_granule: std::sync::OnceLock<Option<u64>>,
 }
 
@@ -1158,7 +1194,7 @@ impl Importer {
         usage: vk::BufferUsageFlags,
         loader_word: &DeviceWord,
         dma_buf: bool,
-        dma_buf_images: bool,
+        _dma_buf_images: bool,
     ) -> Result<Importer, Unsupported> {
         if !enabled
             .extensions
@@ -1200,13 +1236,16 @@ impl Importer {
         };
         let functions = ash::ext::external_memory_host::DeviceFn::load(load);
         let dma_buf = dma_buf.then(|| ash::khr::external_memory_fd::DeviceFn::load(load));
-        let dma_buf_images = dma_buf.is_some() && dma_buf_images;
+        #[cfg(any(unix, windows))]
+        let dma_buf_images = dma_buf.is_some() && _dma_buf_images;
         Ok(Importer {
             functions,
             page,
             alignment,
             dma_buf,
+            #[cfg(any(unix, windows))]
             dma_buf_images,
+            #[cfg(any(unix, windows))]
             sparse_granule: std::sync::OnceLock::new(),
         })
     }
@@ -1220,6 +1259,7 @@ impl Importer {
     /// Whether the device makes images over dma-bufs of host pages (`dma_buf.rs`): it imports
     /// dma-bufs and enables `VK_EXT_image_drm_format_modifier` and `VK_EXT_queue_family_foreign`
     /// (`create.rs`'s `dma_buf_image_names`).
+    #[cfg(any(unix, windows))]
     pub(super) fn makes_dma_buf_images(&self) -> bool {
         self.dma_buf_images
     }
@@ -1230,13 +1270,13 @@ impl Importer {
     /// # Safety
     ///
     /// `device` is the importer's device.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) unsafe fn dma_buf_types(
         &self,
         device: &ash::Device,
-        fd: std::os::fd::BorrowedFd<'_>,
+        fd: crate::fd::BorrowedFd<'_>,
     ) -> Result<u32, vk::Result> {
-        use std::os::fd::AsRawFd;
+        use crate::fd::AsRawFd;
         let functions = self
             .dma_buf
             .as_ref()
@@ -1263,13 +1303,13 @@ impl Importer {
     ///
     /// `device` is the importer's device, and `memory` a live allocation of it made with
     /// `VkExportMemoryAllocateInfo` naming dma-bufs.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) unsafe fn exported_dma_buf(
         &self,
         device: &ash::Device,
         memory: vk::DeviceMemory,
-    ) -> Result<std::os::fd::OwnedFd, vk::Result> {
-        use std::os::fd::FromRawFd;
+    ) -> Result<crate::fd::OwnedFd, vk::Result> {
+        use crate::fd::FromRawFd;
         let functions = self
             .dma_buf
             .as_ref()
@@ -1282,7 +1322,7 @@ impl Importer {
         let result = unsafe { (functions.get_memory_fd_khr)(device.handle(), &info, &mut fd) };
         result.result()?;
         // SAFETY: a new descriptor Vulkan handed over, which the caller owns from here on.
-        Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+        Ok(unsafe { crate::fd::OwnedFd::from_raw_fd(fd) })
     }
 
     /// The memory types `pointer` can be imported into (`vkGetMemoryHostPointerPropertiesEXT`).

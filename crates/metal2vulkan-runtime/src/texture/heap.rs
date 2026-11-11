@@ -2934,7 +2934,7 @@ impl Device {
     /// binds no offset of the heap's: the import is the image's own, bound at its start, its
     /// plane at the texels' offset in their first page, which the driver takes or refuses as the
     /// texture is made (RADV: a multiple of 256 bytes), the shadow taken where it refuses.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn dma_buf_heap_plan(
         &self,
         linear: ImagePlan,
@@ -2963,7 +2963,7 @@ impl Device {
     }
 
     /// No pages are imported as dma-bufs on this system: the shadow, as before.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn dma_buf_heap_plan(
         &self,
         linear: ImagePlan,
@@ -2979,7 +2979,7 @@ impl Device {
     /// the dma-buf the pages' source makes of its own pages ([`Device::dma_buf_image`]), with no
     /// lock of the runtime's held. Where none is made, `p` takes the shadow of the heap's bytes
     /// instead ([`dma_buf_heap_shadow`](Self::dma_buf_heap_shadow)), and nothing is answered.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn made_dma_buf_heap_image(
         &self,
         bytes: &Buffer,
@@ -3012,7 +3012,7 @@ impl Device {
     /// than the texture's `size` bytes, over the one dma-buf the pages' source makes of its own
     /// pages ([`Device::dma_buf_image`]): `pages` are the heap's imports, their memory type and
     /// the host address of the texture's first byte. Why not, where none is made.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn dma_buf_heap_image(
         &self,
         plan: &ImagePlan,
@@ -3040,7 +3040,7 @@ impl Device {
     }
 
     /// No pages are imported as dma-bufs on this system: never reached.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn made_dma_buf_heap_image(
         &self,
         _bytes: &Buffer,
@@ -3073,6 +3073,7 @@ impl Device {
     /// pages imported as dma-buf memory, of which no image over a dma-buf of its own pages is made
     /// for `why` (`dma_buf.rs`): counted (`WorkCounts::dma_buf_image_fallbacks`) and announced
     /// once per device (`shadowed-texture`).
+    #[cfg(any(unix, windows))]
     fn dma_buf_heap_shadow(
         &self,
         linear: ImagePlan,
@@ -3576,7 +3577,7 @@ impl Device {
     /// pages' source makes of its own pages ([`Device::dma_buf_image`]). With no lock of the
     /// runtime's held, as the source is called once for each. Refused
     /// (`NotImplemented(RebindTextures)`) where the device makes no such image of one.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf_heap_images_again(
         &self,
         heap: &Heap,
@@ -3698,7 +3699,7 @@ impl Device {
                 (Some(stand_in), _) => {
                     self.detached_heap_image(&binding, p.image, owner, Arc::clone(stand_in))
                 }
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 (None, Some(made)) => {
                     let pages = binding.pages.as_ref().ok_or_else(|| {
                         internal("a heap texture over dma-buf pages the heap does not lie in")

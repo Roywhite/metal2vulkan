@@ -10,7 +10,7 @@ use super::address::{
     AddressPlacement, AddressRange, GpuAddress, Held, Place, PlacementConflict, RangeToken,
 };
 use super::address_pool::AddressPool;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::buffer::Pages;
 use super::buffer::{
     usage, Buffer, BufferParts, HostCell, HostPages, Lying, Modes, Naming, Owner, ReadApart,
@@ -30,7 +30,7 @@ use super::host_memory::{
     ImportRequest, ImportWindow, Importer, KeepAlive, Release, Source,
 };
 use super::host_ram::{RamOnDevice, Routed};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::host_residency::Again;
 use super::memory::{ImportFailure, MemoryClass, Placement};
 use super::read_only_view::ReadOnlyView;
@@ -485,7 +485,7 @@ impl Device {
     /// as Metal answers nil. The import costs work per page here (on macOS about 11 to 20 ms per
     /// GiB measured on an M4 and an M3 Max), where Metal makes the buffer at once and pays at the
     /// first command using it (24 to 88 ms per GiB). Where the device refuses the pointer and
-    /// `memory` carries a dma-buf source ([`HostMemory::with_dma_buf`]), the dma-bufs it makes of
+    /// `memory` carries a dma-buf source (`HostMemory::with_dma_buf`), the dma-bufs it makes of
     /// the pages are imported instead. With Metal's private option bit 24
     /// ([`ResourceOptions::PRIVATE_BIT`]), the GPU's writes to the pages are dropped, as Metal's
     /// are: on macOS the pages are imported through a read-only view of them, by their pointer
@@ -517,7 +517,7 @@ impl Device {
     /// # Safety
     ///
     /// `memory` meets the contract of the [`HostMemory`] constructor that made it
-    /// ([`HostMemory::new`], [`HostMemory::with_dma_buf`]) for `length` bytes.
+    /// ([`HostMemory::new`], `HostMemory::with_dma_buf`) for `length` bytes.
     pub unsafe fn new_buffer_with_bytes_no_copy(
         &self,
         memory: HostMemory,
@@ -615,9 +615,9 @@ impl Device {
             padding_unobserved,
         } = made;
         if let Some(export) = export {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             return self.exportable_buffer(call, length, options, (place, aligned), export);
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             return Err(Error::NotImplemented(export.gap()));
         }
         let placed = (place, aligned);
@@ -840,11 +840,11 @@ impl Device {
             // imported yet, is released while idle and bound in the chunk's import at its next
             // use where that is made by then (`host_residency.rs`).
             Some((buffer, memory)) => {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 let again = (routed.as_ref().filter(|_| !of_heap))
                     .and_then(|routed| routed.run_again(&memory))
                     .map(|run| Again::ram_run(self, run, (length, window, class)));
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 let again = None;
                 (buffer, memory, again)
             }
@@ -916,11 +916,11 @@ impl Device {
                     match unsafe { self.import_by_pointer(importer, pointer, length, host, class) }
                     {
                         Ok(Ok((buffer, memory))) => {
-                            #[cfg(unix)]
+                            #[cfg(any(unix, windows))]
                             let again = (!of_heap && !drops_writes)
                                 .then(|| Again::pointer(self, pointer, (length, window, class)))
                                 .flatten();
-                            #[cfg(not(unix))]
+                            #[cfg(not(any(unix, windows)))]
                             let again = None;
                             Ok((buffer, memory, again))
                         }
@@ -981,6 +981,8 @@ impl Device {
                 (buffer, memory, again)
             }
         };
+        #[cfg(not(any(unix, windows)))]
+        let _ = again; // No releasable dma-buf import on this OS.
         let (address, reserved) = match self.place_window(placement, &window, length) {
             Ok(held) => held,
             Err(error) => {
@@ -1003,7 +1005,7 @@ impl Device {
             of_heap,
             drops_writes,
             mirror: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again,
             naming,
         });
@@ -1651,7 +1653,7 @@ impl Device {
     /// as the first was, over an import of the pages mapped at the pointer now, which the kept
     /// import would read too. Refused as the first import may be, typed as the import answers
     /// (out of memory among them), or with the device lost.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn import_pointer_again(
         &self,
         pointer: NonNull<u8>,
@@ -1687,7 +1689,7 @@ impl Device {
     /// # Safety
     ///
     /// None: it does nothing.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     unsafe fn import_from_source(
         &self,
         _call: &'static str,
@@ -2060,7 +2062,7 @@ impl Device {
             of_heap,
             drops_writes: read_only,
             mirror: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again: None,
             naming,
         });

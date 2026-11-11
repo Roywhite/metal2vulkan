@@ -80,7 +80,6 @@ mod derived;
 mod descriptor_arena;
 mod detach;
 mod device;
-#[cfg(unix)]
 mod dirty_pages;
 mod dispatch_execute;
 mod dma_buf;
@@ -100,6 +99,8 @@ mod exactness;
 mod execution;
 mod extended_canonical;
 mod families;
+/// OS descriptor ownership for optional Vulkan FD extensions.
+pub mod fd;
 #[doc(hidden)]
 pub use execution::{ExecutedPipeline, Execution};
 mod exit_guard;
@@ -107,9 +108,7 @@ pub use exit_guard::{process_exiting, program_instance_made};
 #[doc(hidden)]
 pub use exit_guard::{registrations as exit_registrations, Registrations as ExitRegistrations};
 mod executed_commands;
-#[cfg(unix)]
 mod exported_memory;
-#[cfg(unix)]
 mod exported_semaphore;
 mod fence;
 mod fetch_reach;
@@ -134,9 +133,7 @@ mod host_backing;
 mod host_bytes;
 mod host_memory;
 mod host_ram;
-#[cfg(unix)]
 mod host_residency;
-#[cfg(unix)]
 mod host_shared_pointers;
 mod image_barrier;
 mod image_plan;
@@ -248,6 +245,8 @@ mod versioned;
 mod view_plan;
 mod visibility;
 mod warm;
+#[cfg(windows)]
+mod windows_memory;
 mod word_fill;
 mod work_counts;
 mod wrapped_buffer;

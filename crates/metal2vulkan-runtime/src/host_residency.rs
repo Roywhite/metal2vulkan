@@ -96,7 +96,7 @@ use super::host_memory::ImportWindow;
 use super::host_ram::RunAgain;
 use super::memory::MemoryClass;
 use super::Device;
-use std::os::fd::OwnedFd;
+use crate::fd::OwnedFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
@@ -120,17 +120,7 @@ const FD_SHARE: u64 = 4;
 /// ([`FD_SHARE`] of the process's soft limit): an import past them stays imported.
 pub(super) fn kept_fds_limit() -> u64 {
     static LIMIT: OnceLock<u64> = OnceLock::new();
-    *LIMIT.get_or_init(|| {
-        let mut limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `limit` is a valid `rlimit` to write.
-        match unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } {
-            0 => limit.rlim_cur / FD_SHARE,
-            _ => 0,
-        }
-    })
+    *LIMIT.get_or_init(|| crate::fd::descriptor_limit() / FD_SHARE)
 }
 
 /// The descriptors the process's devices keep now, within [`kept_fds_limit`].

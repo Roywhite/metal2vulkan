@@ -321,7 +321,7 @@ impl Device {
             of_heap: false,
             drops_writes: false,
             mirror: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again: None,
             naming: Naming::New,
         });

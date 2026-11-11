@@ -143,7 +143,7 @@
 
 use super::buffer::usage;
 use super::device::lock;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::dma_buf::DmaBufPages;
 use super::error::{internal, vulkan, Error, MemoryKind};
 use super::free_thread::{FreeThread, Posted};
@@ -1680,7 +1680,7 @@ pub(super) struct Placement {
     /// The imports of the caller's dma-bufs the placement lies in, with the source that made them
     /// (`dma_buf.rs`), which no block of the runtime's holds: kept until the placement goes, and
     /// freed, the source dropped, when their last holder goes.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     dma_buf: Option<Arc<DmaBufPages>>,
     /// The device's import of a chunk of a guest RAM the placement lies in (`host_ram.rs`), which
     /// no block of the placement's holds: kept until the placement goes.
@@ -1712,7 +1712,7 @@ impl Placement {
             read_only_view: false,
             overflowed: false,
             fresh: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             dma_buf: None,
             ram_chunk: None,
         }
@@ -1730,7 +1730,7 @@ impl Placement {
         size: u64,
         mapped: Mapped,
     ) -> Placement {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let dma_buf = chunk.dma_buf_pages().cloned();
         Placement {
             type_index: chunk.type_index(),
@@ -1746,7 +1746,7 @@ impl Placement {
             read_only_view: false,
             overflowed: false,
             fresh: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             dma_buf,
             ram_chunk: Some(chunk),
         }
@@ -1758,7 +1758,7 @@ impl Placement {
     /// sparse buffer; their host address is `mapped`, the pages' pointer (the runtime never maps
     /// a dma-buf). No block of the runtime's, so freeing it returns nothing; it keeps the imports
     /// until it goes.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf(
         pages: Arc<DmaBufPages>,
         memory: vk::DeviceMemory,
@@ -1798,11 +1798,11 @@ impl Placement {
     /// Whether the placement lies in imports of the caller's dma-bufs (`dma_buf.rs`), to which no
     /// image is bound (an image over them is bound to a dma-buf of its own pages).
     pub(super) fn over_dma_buf(&self) -> bool {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.dma_buf.is_some()
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
@@ -1857,7 +1857,7 @@ impl Placement {
     /// The imports of the caller's dma-bufs the placement lies in, with their source
     /// (`dma_buf.rs`): its own, or those of the guest RAM's chunk it lies in (`host_ram.rs`);
     /// `None` for any other placement.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf_pages(&self) -> Option<&Arc<DmaBufPages>> {
         self.dma_buf.as_ref()
     }
@@ -1869,7 +1869,7 @@ impl Placement {
     /// the same byte. What a texture over the bytes asks the source for its own pages at.
     ///
     /// [`dma_buf_pages`]: Placement::dma_buf_pages
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf_address(&self, view: u64) -> u64 {
         match (&self.ram_chunk, self.mapped) {
             (Some(chunk), Some(mapped)) => (chunk.ram_address(self.offset))
@@ -1882,7 +1882,7 @@ impl Placement {
     /// where it may not have (`dma_buf.rs`'s `DmaBufPages::settle`): before that buffer is
     /// destroyed. Any other placement has nothing to wait for.
     pub(super) fn settle(&self) {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(pages) = &self.dma_buf {
             pages.settle();
         }
@@ -1908,7 +1908,7 @@ impl Placement {
             read_only_view: self.read_only_view,
             overflowed: self.overflowed,
             fresh: self.fresh,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             dma_buf: self.dma_buf.clone(),
             ram_chunk: self.ram_chunk.clone(),
         }
@@ -3157,7 +3157,7 @@ impl Memory {
             read_only_view: payload.view.is_some(),
             overflowed: false,
             fresh: false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             dma_buf: None,
             ram_chunk: None,
         }
@@ -3508,7 +3508,7 @@ impl Memory {
     /// (`VUID-vkBindImageMemory-memory-10926`) or in memory the caller made and keeps, whose
     /// handle types the runtime does not know.
     pub(super) fn bound_memory(&self, placement: &Placement) -> BoundMemory {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if placement.dma_buf.is_some() {
             return BoundMemory::External(DMA_BUF_HANDLE);
         }
@@ -4055,16 +4055,16 @@ fn image_types(
 /// may have given it to another thread's `open` by then, so a handed-over clone is let go of
 /// instead: one descriptor per failed import, in place of a process that dies. `fd` itself is
 /// closed here as it always was, once, on the way out.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn import_dma_buf(
     memory: &Mutex<Memory>,
     device: &ash::Device,
-    fd: std::os::fd::OwnedFd,
+    fd: crate::fd::OwnedFd,
     size: u64,
     (allowed, class): (u32, MemoryClass),
     image: Option<vk::Image>,
 ) -> Result<(vk::DeviceMemory, u32), ImportFailure> {
-    use std::os::fd::{AsRawFd, IntoRawFd};
+    use crate::fd::{AsRawFd, IntoRawFd};
     let (types, device_address) = {
         let memory = lock(memory);
         (

@@ -156,7 +156,7 @@ mod attached_reads;
 mod attributes;
 pub(super) mod copy_images;
 pub(crate) mod decoded_twin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod fd_blocks_cover;
 pub(crate) mod first_move;
 #[cfg(all(test, any(m2v_gpu, m2v_cpu_icd)))]
@@ -171,7 +171,6 @@ mod in_place_image;
 pub(super) mod kept_image;
 pub(super) mod linear_alignment;
 pub(super) mod requirements;
-#[cfg(unix)]
 mod rotation;
 mod route;
 mod shared;
@@ -233,7 +232,7 @@ pub(super) struct TextureState {
     /// Each Vulkan format's `DRM_FORMAT_MOD_LINEAR` tiling features, asked of the driver at the
     /// first image of that tiling planned in it (`dma_buf.rs`'s `modifier_features`): one entry
     /// per format at most.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) modifier_features: Mutex<HashMap<Format, FormatFeatureFlags2>>,
     /// Every pixel format's `minimumLinearTextureAlignmentForPixelFormat:` answer, worked out at
     /// the first query of any and kept for the device's life (`texture/linear_alignment.rs`).
@@ -283,7 +282,7 @@ impl TextureState {
             usage_answers: Mutex::new(UsageAnswers::default()),
             sample_moves: Mutex::new(Vec::new()),
             format_answers: Mutex::new(HashMap::new()),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             modifier_features: Mutex::new(HashMap::new()),
             linear_alignments: std::sync::OnceLock::new(),
             heap_types: std::sync::OnceLock::new(),
@@ -686,17 +685,14 @@ struct Raw {
 /// What keeps an image's `VkImage` beside the image: the dedicated import of dma-buf pages it is
 /// bound to (`dma_buf.rs`), freed after it is destroyed.
 pub(super) enum RawHold {
+    #[cfg(any(unix, windows))]
     Import { _pages: ImageImport },
 }
 
 /// The dedicated import of the pages a texture's image over dma-buf pages is bound to
 /// (`dma_buf.rs`), freed after the image is destroyed.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) type ImageImport = Arc<crate::dma_buf::DmaBufPages>;
-
-/// No image is made over dma-buf pages on this system.
-#[cfg(not(unix))]
-pub(super) type ImageImport = std::convert::Infallible;
 
 impl Raw {
     fn new(raw: vk::Image) -> Raw {
@@ -707,7 +703,7 @@ impl Raw {
     }
 
     /// `raw`, bound to `import`, its dedicated import.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn imported(raw: vk::Image, import: ImageImport) -> Raw {
         Raw {
             image: AtomicU64::new(raw.as_raw()),
@@ -717,10 +713,9 @@ impl Raw {
 
     /// Whether the `VkImage` now is bound to a dedicated import of its own pages.
     fn dedicated(&self) -> bool {
-        match &*lock(&self.import) {
-            Some(RawHold::Import { .. }) => true,
-            None => false,
-        }
+        // Every retained hold is an import. Test the option itself so hosts
+        // without that import route do not match a reference to an empty enum.
+        lock(&self.import).is_some()
     }
 
     /// The `VkImage` now.
@@ -883,11 +878,11 @@ type Aliased = Result<(Arc<Image>, AliasCount), (String, Option<ShadowCause>)>;
 
 /// An image over the runtime's memory exported as a dma-buf, bound to a dedicated import of that
 /// memory's own dma-buf (`Device::exported_dma_buf_alias`).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 type ExportedImage = crate::dma_buf::DmaBufImage;
 
 /// No image is made over a dma-buf on this system.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 type ExportedImage = std::convert::Infallible;
 
 /// The last step before a texture's shadow over the runtime's memory exported as a dma-buf
@@ -956,7 +951,7 @@ impl ImageObjects {
 
     /// `raw`, a new image of `device`'s bound to `import`, its dedicated import of dma-buf pages
     /// (`dma_buf.rs`), with no views yet.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn imported(device: &Device, raw: vk::Image, import: ImageImport) -> ImageObjects {
         ImageObjects {
             device: device.clone(),
@@ -3125,7 +3120,7 @@ impl Device {
     /// made and bound; else whether it would be, the image released unbound (the placement query).
     /// `None` where the memory is no such export or `cause` is the device's policy or check, not a
     /// refusal of the image: the shadow it names stands. Else why not, with the shadow's cause.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn exported_dma_buf_alias(
         &self,
         plan: &ImagePlan,
@@ -3212,7 +3207,7 @@ impl Device {
     }
 
     /// No image is made over a dma-buf on this system.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn exported_dma_buf_alias(
         &self,
         _plan: &ImagePlan,
@@ -3442,7 +3437,7 @@ impl Device {
     /// `VK_QUEUE_FAMILY_FOREIGN_EXT` into `GENERAL`, keeping the bytes, as an image over dma-buf
     /// pages does (`dma_buf.rs`, "Their layouts"); the buffer's own acquires
     /// (`Buffer::external_write_done`) order the other API's writes as for an image in the memory.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn exported_dma_buf_texture_image(
         &self,
         made: ExportedImage,
@@ -3495,7 +3490,7 @@ impl Device {
     }
 
     /// No image is made over a dma-buf on this system.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn exported_dma_buf_texture_image(
         &self,
         made: ExportedImage,
@@ -3570,7 +3565,7 @@ impl Device {
     /// linear image's (a write of its bytes is a write of its texels), its first move acquiring
     /// it from `VK_QUEUE_FAMILY_FOREIGN_EXT` into `GENERAL`, keeping the bytes, and holding
     /// `pages`, the host pages its bytes lie in.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn dma_buf_texture_image(
         &self,
         made: crate::dma_buf::DmaBufImage,
@@ -3654,7 +3649,7 @@ impl Device {
     /// settles, with no lock of the runtime's held: the source is called once for each. Nothing
     /// for pages imported by their pointer. Refused (`NotImplemented(RebindTextures)`), what was
     /// made released, where the device makes no such image of one (`dma_buf_image`'s reasons).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf_images_again(
         &self,
         heap: &Heap,
@@ -3672,7 +3667,7 @@ impl Device {
     }
 
     /// No pages are imported as dma-bufs on this system: nothing is made.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub(super) fn dma_buf_images_again(
         &self,
         _heap: &Heap,

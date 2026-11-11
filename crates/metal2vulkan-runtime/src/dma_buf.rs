@@ -92,12 +92,12 @@ use super::linear_plan::{check_linear_limits, tiling_lack, viewed_formats, Linea
 use super::memory::{self, ImportFailure, MemoryClass, Placement};
 use super::program_objects::ProgramObject;
 use super::Device;
+use crate::fd::{AsFd, BorrowedFd, OwnedFd};
 use crate::release;
 use ash::vk;
 use metal2vulkan::error::RuntimeDriverDefect;
 use metal2vulkan::vk::{Format, FormatFeatureFlags2, ImageCreateFlags, SampleCountFlags};
 use std::ops::Range;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -420,7 +420,7 @@ fn answers(chunks: &[DmaBufChunk], request: &DmaBufRequest, page: u64) -> bool {
 /// dma-buf file system).
 #[cfg(target_os = "linux")]
 fn dma_buf_length(fd: BorrowedFd<'_>) -> Option<u64> {
-    use std::os::fd::AsRawFd;
+    use crate::fd::AsRawFd;
     /// `DMA_BUF_MAGIC` of Linux's `include/uapi/linux/magic.h`.
     const DMA_BUF_MAGIC: u64 = 0x444d_4142;
     let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -1153,16 +1153,6 @@ impl Device {
         match self.dma_buf_image_unbound(plan, facts, texels)? {
             Ok(unbound) => self.bind_dma_buf_image(unbound, texels),
             Err(why) => Ok(Err(why)),
-        }
-    }
-
-    /// The queue family the first move of an image over dma-buf pages acquires it for: the
-    /// device's one family, or `VK_QUEUE_FAMILY_IGNORED` where its images are concurrent among
-    /// several (`sharing.rs`), as Vulkan has an acquire of such an image name it.
-    pub(super) fn foreign_acquirer(&self) -> u32 {
-        match &self.shared().queue_families[..] {
-            [family] => *family,
-            _ => vk::QUEUE_FAMILY_IGNORED,
         }
     }
 

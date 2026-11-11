@@ -101,6 +101,7 @@ use relay::Flights;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+#[cfg(any(unix, windows, test))]
 use std::time::Instant;
 use submit::{Internal, OwnTimeline};
 
@@ -418,20 +419,21 @@ pub(super) struct DeviceShared {
     /// How it exports an exportable buffer's memory as an opaque file descriptor; `None` where
     /// it enables no `VK_KHR_external_memory_fd` or exports no buffer's memory so
     /// (`exported_memory.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) opaque_fd: Option<crate::exported_memory::FdExport>,
     /// How it exports a dma-buf-exportable buffer's memory as a dma-buf; `None` where it enables
     /// not the dma-buf route's extensions and `VK_EXT_queue_family_foreign`, or exports no
     /// buffer's memory so (`exported_memory.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) dma_buf_export: Option<crate::exported_memory::FdExport>,
     /// How it exports an exportable shared event's timeline semaphore as an opaque file
     /// descriptor; `None` where it enables no `VK_KHR_external_semaphore_fd` or exports no
     /// timeline semaphore so (`exported_semaphore.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) opaque_fd_semaphores: Option<crate::exported_semaphore::OpaqueFdSemaphores>,
     /// Whether the device imports a pointer to shared memory, once asked
     /// (`Device::imports_shared_host_pointers`).
+    #[cfg(any(unix, windows))]
     pub(super) shared_pointer_imports: OnceLock<bool>,
     /// The commands of a render pipeline's extended dynamic states, where the device has them
     /// (`dynamic_state.rs`).
@@ -590,7 +592,7 @@ pub(super) struct DeviceShared {
     pub(crate) carry: carry::Carry,
     /// The imports of the caller's dma-bufs it releases while idle, and the thread that releases
     /// them (`host_residency.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) residency: super::host_residency::Sweeper,
     /// How its command buffers are timed on the GPU (`gpu_time.rs`).
     pub(super) timing: Timing,
@@ -1031,7 +1033,7 @@ impl Drop for DeviceShared {
         // this teardown runs on its thread.
         self.reaper.stop();
         // What the residency thread releases holds the device: none is left.
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         self.residency.stop();
         self.completion.stop();
         self.contexts.stop();
@@ -1857,17 +1859,17 @@ impl Device {
             creation_feedback,
             dma_buf,
             dma_buf_images,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             memory_fd,
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
                 memory_fd: _,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             foreign_family,
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
                 foreign_family: _,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             semaphore_fd,
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
                 semaphore_fd: _,
             sparse_features,
             memory_reads,
@@ -2297,7 +2299,7 @@ impl Device {
         // How the device exports a buffer's memory as an opaque file descriptor, and as a dma-buf,
         // where it enables the extensions each needs and exports a buffer's memory so
         // (`exported_memory.rs`).
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let (opaque_fd, dma_buf_export) = {
             // SAFETY: as above; the loader serves `vkGetDeviceProcAddr` once the word is put
             // back, and the device enables the extension.
@@ -2391,7 +2393,7 @@ impl Device {
         };
         // How the device exports a timeline semaphore as an opaque file descriptor, where it
         // enables `VK_KHR_external_semaphore_fd` and exports one so (`exported_semaphore.rs`).
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let opaque_fd_semaphores = {
             // SAFETY: as above; the loader serves `vkGetDeviceProcAddr` once the word is put
             // back, and the device enables the extension.
@@ -2683,11 +2685,11 @@ impl Device {
                 assume_submissions_merge,
             )),
             host_import,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             opaque_fd,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             dma_buf_export,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             opaque_fd_semaphores,
             shared_pointer_imports: OnceLock::new(),
             extended_dynamic_state,
@@ -2748,7 +2750,7 @@ impl Device {
             owners: Default::default(),
             live_buffers: Default::default(),
             carry: Default::default(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             residency: Default::default(),
             timing,
             view_reinterpretation,
@@ -2822,6 +2824,7 @@ impl Device {
 
 impl exit_guard::InProcess for DeviceShared {
     /// Wait on each `VkQueue`'s timeline for the value of the last batch submitted there.
+    #[cfg(any(unix, windows, test))]
     fn drain(&self, deadline: Option<Instant>) -> bool {
         let (timelines, values): (Vec<vk::Semaphore>, Vec<u64>) = self
             .queues
@@ -2853,5 +2856,18 @@ pub(super) fn device_error(error: metal2vulkan::error::Error) -> Error {
     match error {
         metal2vulkan::error::Error::Unsupported(unsupported) => Error::Unsupported(unsupported),
         other => Error::Compile(other),
+    }
+}
+
+// Queue ownership is independent of the OS used to import memory.
+impl Device {
+    /// The queue family the first move of an image over dma-buf pages acquires it for: the
+    /// device's one family, or `VK_QUEUE_FAMILY_IGNORED` where its images are concurrent among
+    /// several (`sharing.rs`), as Vulkan has an acquire of such an image name it.
+    pub(super) fn foreign_acquirer(&self) -> u32 {
+        match &self.shared().queue_families[..] {
+            [family] => *family,
+            _ => vk::QUEUE_FAMILY_IGNORED,
+        }
     }
 }

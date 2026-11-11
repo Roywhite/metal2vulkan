@@ -36,7 +36,7 @@ use super::heap::{Heap, HeapType};
 use super::host_aliases::Alias;
 use super::host_memory::{HeldBack, HostParts, KeepAlive, Release};
 use super::host_ram::RamOnDevice;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::host_residency::{Again, Residency};
 use super::memory::{
     BoundMemory, Holds, Mapped, MemoryClass, Placement, BLOCK_BYTES, FD_BLOCKS_HANDLE,
@@ -1146,7 +1146,7 @@ impl HostPages {
             return None;
         }
         let pages = import.pages(ReadApart::VkBuffer);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if matches!(pages, ImportPages::StandIn(_)) {
             return None;
         }
@@ -1175,7 +1175,7 @@ impl HostPages {
     /// address where their bytes start (from which an image over them reckons its texels'); and
     /// the imports' memory type. `None` for pages imported by their pointer. A read that keeps
     /// the import imported for good (`host_residency.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn dma_buf(&self) -> Option<(Arc<crate::dma_buf::DmaBufPages>, u64, u32)> {
         let pages = self.import.pages(ReadApart::Texture);
         let placement = &pages.memory.placement;
@@ -1353,6 +1353,7 @@ impl Shape {
     }
 
     /// Whether `other` lays the bytes as this does: an import again of them as their first.
+    #[cfg(any(unix, windows))]
     pub(super) fn same(&self, other: &Shape) -> bool {
         let at = |shape: &Shape| shape.mapped.map(Mapped::as_ptr);
         (
@@ -1441,7 +1442,7 @@ enum Objects {
     /// Imported until the import goes.
     Fixed(Imported),
     /// Released while idle, and imported again at the next read (`host_residency.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Releasable(Residency),
 }
 
@@ -1449,11 +1450,11 @@ enum Objects {
 /// keeps them, or held, from one that may release them, for as long as the read lasts.
 pub(super) enum ImportPages<'a> {
     Fixed(&'a Pages),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Held(Arc<Imported>),
     /// The device's stand-in, which a read of a released import takes where the device cannot
     /// import it again ([`HostImport::pages`]).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     StandIn(Arc<FixedPages>),
 }
 
@@ -1463,9 +1464,9 @@ impl std::ops::Deref for ImportPages<'_> {
     fn deref(&self) -> &Pages {
         match self {
             ImportPages::Fixed(pages) => pages,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             ImportPages::Held(imported) => &imported.pages,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             ImportPages::StandIn(stand_in) => &stand_in.pages,
         }
     }
@@ -1500,7 +1501,7 @@ impl HostImport {
 
     /// The import of `pages`, no pages lying in it yet, which the device releases while idle and
     /// `again` imports again (`host_residency.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn releasable(
         device: &Device,
         pages: Pages,
@@ -1575,7 +1576,7 @@ impl HostImport {
     }
 
     /// Its residency, where the device may release it while idle.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn residency(&self) -> Option<&Residency> {
         match &*self.objects {
             Objects::Fixed(_) => None,
@@ -1591,7 +1592,7 @@ impl HostImport {
         self.note_read_apart(reason);
         match &*self.objects {
             Objects::Fixed(imported) => ImportPages::Fixed(&imported.pages),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Objects::Releasable(residency) => match residency.exposed() {
                 Some(held) => ImportPages::Held(held),
                 None => {
@@ -1610,7 +1611,7 @@ impl HostImport {
     pub(super) fn blit_pages(&self) -> Result<(ImportPages<'_>, Option<ImportHold>), Error> {
         match &*self.objects {
             Objects::Fixed(imported) => Ok((ImportPages::Fixed(&imported.pages), None)),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Objects::Releasable(residency) => {
                 let held = residency.for_blit()?;
                 let hold = ImportHold::Held(Arc::clone(&held));
@@ -1624,7 +1625,7 @@ impl HostImport {
     fn listing(&self) -> Option<ImportPages<'_>> {
         match &*self.objects {
             Objects::Fixed(imported) => Some(ImportPages::Fixed(&imported.pages)),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Objects::Releasable(residency) => residency.listing().map(ImportPages::Held),
         }
     }
@@ -1635,7 +1636,7 @@ impl HostImport {
         self.note_read_apart(reason);
         match &*self.objects {
             Objects::Fixed(_) => false,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Objects::Releasable(residency) => residency.expose(),
         }
     }
@@ -1775,7 +1776,7 @@ impl Drop for HostImport {
             // replaced its pages), and what waits for the free with them: a driver may list a
             // pointer import's memory in every submission, which fails where its pages were
             // unmapped.
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Objects::Releasable(residency) => match residency.let_go() {
                 Some(held) => {
                     held.leave(left);
@@ -2010,7 +2011,7 @@ impl Pages {
     /// no memory of their own, whatever the chunk's import: at once.
     fn after_free(&self, after: Box<dyn Send>) {
         let placement = &self.memory.placement;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(imports) = placement
             .dma_buf_pages()
             .filter(|_| !placement.over_ram_chunk())
@@ -2292,7 +2293,7 @@ pub(super) struct BufferParts {
     pub(super) mirror: Option<Arc<Mirror>>,
     /// What imports a no-copy buffer's dma-bufs again, where the device may release its import
     /// while idle (`host_residency.rs`).
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) again: Option<Again>,
     /// A new buffer, or the same buffer on its device's next generation.
     pub(super) naming: Naming,
@@ -2924,7 +2925,7 @@ impl Device {
             of_heap,
             drops_writes: false,
             mirror,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again: None,
             naming: Naming::New,
         });
@@ -3071,7 +3072,7 @@ impl Device {
             of_heap: false,
             drops_writes: false,
             mirror: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again: None,
             naming: Naming::New,
         }))
@@ -3094,7 +3095,7 @@ impl Device {
             of_heap,
             drops_writes,
             mirror,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             again,
             naming,
         } = parts;
@@ -3110,9 +3111,9 @@ impl Device {
                     (false, true) => None,
                     (false, false) => Some(KeptBecause::Pointer),
                 };
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 let import = self.host_import(pages, again, kept);
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 let import = Arc::new(HostImport::new(self, pages, kept));
                 self.host_lie(identity.key, import, release, drops_writes)
             }
@@ -3138,7 +3139,7 @@ impl Device {
     /// The import of a no-copy buffer's `pages`: one the device releases while idle where
     /// `again` imports them again and the device keeps a stand-in for it and a thread to release
     /// it (`host_residency.rs`), else one it keeps, for `kept` where nothing imports it again.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn host_import(
         &self,
         pages: Pages,
@@ -4220,7 +4221,7 @@ impl Buffer {
 
     /// The pages a buffer of its own lies in for good (the runtime's memory, or the caller's
     /// `VkBuffer`); `None` for a no-copy buffer and a heap's.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn fixed_pages(&self) -> Option<Arc<FixedPages>> {
         match &self.s().bytes {
             Bytes::Own(OwnBytes {

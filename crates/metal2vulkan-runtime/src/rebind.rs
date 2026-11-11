@@ -68,7 +68,7 @@
 //!   dma-bufs, each such image is made again over a dma-buf of its own new pages before the rebind
 //!   settles (`Device::dma_buf_images_again`, `dma_buf.rs`), and refused likewise where it is not.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::buffer::Imported;
 use super::buffer::{Buffer, Detached, HostCell, HostPages, Lying, WeakBuffer};
 use super::command_buffer::CommandBufferShared;
@@ -780,19 +780,19 @@ pub(super) struct Taken {
 /// nothing of a command buffer not yet submitted: their free, and the deallocator after it, run
 /// in that call, and the recording that named them never runs (its pin of the pages moved).
 pub(super) enum ImportHold {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Held(Arc<Imported>),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Waiting(Weak<Imported>),
 }
 
 impl ImportHold {
     /// Held weakly from now on.
     fn wait(&mut self) {
-        match self {
-            #[cfg(unix)]
-            ImportHold::Held(held) => *self = ImportHold::Waiting(Arc::downgrade(held)),
-            #[cfg(unix)]
+        match *self {
+            #[cfg(any(unix, windows))]
+            ImportHold::Held(ref held) => *self = ImportHold::Waiting(Arc::downgrade(held)),
+            #[cfg(any(unix, windows))]
             ImportHold::Waiting(_) => {}
         }
     }
@@ -800,9 +800,9 @@ impl ImportHold {
     /// The objects, held until the command buffer completes: `None` where they went.
     fn retained(self) -> Option<Box<dyn Any + Send + Sync>> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             ImportHold::Held(held) => Some(Box::new(held)),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             ImportHold::Waiting(held) => held
                 .upgrade()
                 .map(|held| Box::new(held) as Box<dyn Any + Send + Sync>),
@@ -986,7 +986,7 @@ impl Buffer {
     /// # Safety
     ///
     /// `memory` meets the contract of the [`HostMemory`] constructor that made it
-    /// ([`HostMemory::new`], [`HostMemory::with_dma_buf`]) for the buffer's length. The old memory
+    /// ([`HostMemory::new`], `HostMemory::with_dma_buf`) for the buffer's length. The old memory
     /// stays mapped until its keep-alive is dropped, else until its deallocator runs, or with
     /// neither until every command buffer first submitted before the call completed. No command
     /// that uses the buffer is encoded, and no command buffer that uses it committed, on another

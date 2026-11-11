@@ -109,7 +109,7 @@ enum Unplaced {
     /// Over pages imported as dma-bufs: the image over them, checked against their pages, before
     /// the caller's source is asked; with the pages, their imports and memory type, and the host
     /// address of the texels' first byte.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     DmaBuf {
         unbound: crate::dma_buf::Unbound,
         pages: Arc<crate::buffer::HostPages>,
@@ -136,7 +136,7 @@ fn shared_rows(layout: &BufferLayout) -> Option<(Refusal, String)> {
 }
 
 /// The refusal of an image in place over dma-buf pages of `kind` (`dma_buf.rs`).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn dma_buf_refusal(kind: crate::dma_buf::DmaBufRefusal) -> Refusal {
     use crate::dma_buf::DmaBufRefusal as D;
     match kind {
@@ -630,7 +630,7 @@ impl Device {
     }
 
     /// [`unplaced`](Self::unplaced) over pages imported as dma-bufs.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn dma_buf_unplaced(
         &self,
         plan: &ImagePlan,
@@ -673,7 +673,7 @@ impl Device {
     }
 
     /// No pages are imported as dma-bufs on this system.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn dma_buf_unplaced(
         &self,
         _plan: &ImagePlan,
@@ -734,7 +734,7 @@ impl Device {
                 *lock(&image.first_move) = Some(first);
                 Ok(Ok((image.shared(), pitched)))
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Unplaced::DmaBuf {
                 unbound,
                 pages,
@@ -782,7 +782,7 @@ impl Device {
                 // SAFETY: the image is live and unbound, and no command uses it.
                 unsafe { release::object(self.shared().vk(), made.raw) };
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Unplaced::DmaBuf { unbound, .. } => unbound.release(self),
         }
     }
@@ -979,7 +979,7 @@ impl Device {
     /// (`Device::modifier_image_checks`), refuses the layout or lays it out otherwise, or asks a
     /// dedicated allocation of it: the runtime asks the driver and takes its answer, never a rule
     /// of its own.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn pitched_image(
         &self,
         plan: &ImagePlan,
@@ -1077,7 +1077,7 @@ impl Device {
     }
 
     /// No image is laid out by DRM format modifier on this system.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub(super) fn pitched_image(
         &self,
         _plan: &ImagePlan,
@@ -1328,7 +1328,7 @@ impl Device {
     /// ([`Device::dma_buf_image`]). With no lock of the runtime's held, as the source is called
     /// once for each. Nothing for pages imported by their pointer. Refused
     /// (`NotImplemented(RebindTextures)`) where the device makes no such image of one.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn dma_buf_in_place_again(
         &self,
         watches: &[InPlaceWatch],
@@ -1366,7 +1366,7 @@ impl Device {
     }
 
     /// No pages are imported as dma-bufs on this system: nothing is made.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub(crate) fn dma_buf_in_place_again(
         &self,
         _watches: &[InPlaceWatch],

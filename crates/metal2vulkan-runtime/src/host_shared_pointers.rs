@@ -78,13 +78,20 @@ impl Device {
     }
 }
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::SharedPages;
+
 /// Pages of shared memory mapped read and write, unmapped when it drops: of a `memfd` on Linux,
 /// anonymous elsewhere.
+#[cfg(unix)]
 struct SharedPages {
     at: NonNull<u8>,
     length: usize,
 }
 
+#[cfg(unix)]
 impl SharedPages {
     /// `length` bytes of them; `None` where they cannot be made.
     fn new(length: u64) -> Option<SharedPages> {
@@ -139,6 +146,7 @@ impl SharedPages {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SharedPages {
     fn drop(&mut self) {
         // SAFETY: this object's own mapping, which nothing imports any more.

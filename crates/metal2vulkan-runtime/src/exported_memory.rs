@@ -90,9 +90,9 @@ use super::memory::{allocate_exported, Exported, DMA_BUF_HANDLE, EXPORT_HANDLE};
 use super::values::ResourceOptions;
 use super::{Buffer, Device};
 use crate::address::AddressPlacement;
+use crate::fd::{FromRawFd, OwnedFd};
 use crate::release;
 use ash::vk;
-use std::os::fd::{FromRawFd, OwnedFd};
 
 use super::buffer_descriptor::MemoryExport;
 

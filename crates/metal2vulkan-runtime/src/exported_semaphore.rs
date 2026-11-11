@@ -31,8 +31,8 @@
 use super::error::{invalid, vulkan, Error, Problem, RuntimeGap};
 use super::event::EventRef;
 use super::{Device, SharedEvent};
+use crate::fd::{FromRawFd, OwnedFd};
 use ash::vk;
-use std::os::fd::{FromRawFd, OwnedFd};
 
 /// The handle type the events export their semaphore as.
 const HANDLE: vk::ExternalSemaphoreHandleTypeFlags =

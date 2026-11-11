@@ -8,8 +8,8 @@
 //! end alone.
 
 use crate::gpu_time::{
-    host_domain, host_time, least_deviation, Extension, GpuClock, KernelTimes, Life, Pair,
-    Placement, Pool, Pools, Reading, DRIFT_PPM, PLAIN, PREFIXED, SLOTS,
+    host_time, least_deviation, Extension, GpuClock, KernelTimes, Life, Pair, Placement, Pool,
+    Pools, Reading, DRIFT_PPM, PLAIN, PREFIXED, SLOTS,
 };
 use ash::vk;
 use std::collections::BTreeSet;
@@ -238,6 +238,7 @@ fn a_pair_that_places_times_outside_the_life_is_set_aside() {
 #[cfg(unix)]
 #[test]
 fn calibration_reads_the_devices_domain_and_a_monotonic_host_one() {
+    use crate::gpu_time::host_domain;
     use vk::TimeDomainKHR as D;
     // `TimeDomainKHR` has no `Debug` without ash's `debug` feature: compared, not printed.
     let chosen = |offered: &[D]| host_domain(offered);

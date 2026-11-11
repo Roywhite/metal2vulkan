@@ -1431,7 +1431,7 @@ impl ClassPages {
                 // Made only where such a block holds every image a texture over a plain block's
                 // buffer that keeps its padding takes in place (`texture/fd_blocks_cover.rs`),
                 // noted in the memory log.
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 if let Err(why) = device.fd_blocks_cover() {
                     let line = format!("the runtime's own buffers lie in plain blocks: {why}");
                     lock(&device.shared().memory).note(line);
@@ -1510,7 +1510,7 @@ fn unimported(device: &Device, why: &str) -> Unmade {
 /// A no-copy buffer of `length` bytes over anonymous pages mapped for it, imported by their
 /// pointer, which its keep-alive unmaps ([`Anonymous`]). Why not, where the device makes none,
 /// or does not import the pointer (dma-bufs, or a copied host buffer, `copied.rs`).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn pointer_pages(device: &Device, length: u64) -> Result<ClassPages, Unmade> {
     let start = map_anonymous(length).ok_or_else(|| {
         Unmade::passing(format!("no anonymous mapping of {length} bytes was made"))
@@ -1535,7 +1535,7 @@ fn pointer_pages(device: &Device, length: u64) -> Result<ClassPages, Unmade> {
 /// keep-alive, not a deallocator, so the buffer's release runs at Metal's moment and waits for no
 /// batch submitted before it (`HostPages`'s release), and `pages` goes once the import is freed
 /// (`KeepAlive`). Why not, where the device refuses the buffer, `pages` dropped with the refusal.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn no_copy_kept(
     device: &Device,
     memory: HostMemory,
@@ -1554,17 +1554,17 @@ fn no_copy_kept(
 }
 
 /// Anonymous pages [`map_anonymous`] mapped, unmapped as this goes: a check buffer's keep-alive.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct Anonymous {
     start: NonNull<u8>,
     length: u64,
 }
 
 // SAFETY: the mapping is this value's alone to unmap, from any thread, once nothing uses it.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 unsafe impl Send for Anonymous {}
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for Anonymous {
     fn drop(&mut self) {
         unmap(self.start, self.length);
@@ -1599,7 +1599,7 @@ fn unmap(pointer: NonNull<u8>, length: u64) {
 }
 
 /// No anonymous pages are mapped on this system: the class is unchecked.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn pointer_pages(_device: &Device, _length: u64) -> Result<ClassPages, Unmade> {
     Err(Unmade::lasting(
         "the system maps no anonymous pages for the check",
@@ -1607,7 +1607,7 @@ fn pointer_pages(_device: &Device, _length: u64) -> Result<ClassPages, Unmade> {
 }
 
 /// No dma-bufs on this system: the class is unchecked.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn dma_buf_pages(_device: &Device, _length: u64) -> Result<ClassPages, Unmade> {
     Err(Unmade::lasting("the system has no dma-bufs"))
 }
@@ -1615,7 +1615,7 @@ fn dma_buf_pages(_device: &Device, _length: u64) -> Result<ClassPages, Unmade> {
 /// A no-copy buffer of `length` bytes over pages the device refuses by their pointer, imported
 /// as dma-bufs: an allocation of the device's own, host-visible and exported as a dma-buf, mapped
 /// (the module docs).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn dma_buf_pages(device: &Device, length: u64) -> Result<ClassPages, Unmade> {
     let exported = crate::dma_buf::ExportedPages::make(device, length)?;
     let start = exported.start();
@@ -2170,4 +2170,16 @@ fn host_page() -> u64 {
         }
     }
     4096
+}
+
+/// The pointer-import qualification's own pages on Windows.
+#[cfg(windows)]
+fn map_anonymous(length: u64) -> Option<NonNull<u8>> {
+    crate::windows_memory::map_pages(length)
+}
+
+/// The import and qualification have ended before their backing pages are released.
+#[cfg(windows)]
+fn unmap(pointer: NonNull<u8>, _length: u64) {
+    crate::windows_memory::unmap_pages(pointer);
 }

@@ -263,6 +263,7 @@ pub(crate) trait InProcess: Send + Sync {
     /// Wait until the work submitted to its queues completed, at most until `deadline` (`None`:
     /// no deadline): whether
     /// it did. Called by the hook once the sections ended, so nothing is submitted meanwhile.
+    #[cfg(any(unix, windows, test))]
     fn drain(&self, deadline: Option<Instant>) -> bool;
 }
 
@@ -289,6 +290,7 @@ impl InProcessDevices {
 
     /// Take the devices made in process `pid` off the list: the live ones. A second call finds
     /// none.
+    #[cfg(any(unix, windows, test))]
     pub(crate) fn take(&self, pid: u32) -> Vec<Arc<dyn InProcess>> {
         self.devices
             .lock()
@@ -301,6 +303,7 @@ impl InProcessDevices {
 
 /// Wait for the submitted work of each of `devices`, at most until `deadline`: whether every one
 /// completed.
+#[cfg(any(unix, windows, test))]
 fn drain(devices: &[Arc<dyn InProcess>], deadline: Option<Instant>) -> bool {
     // Every device is waited for, whatever an earlier one answered.
     let mut drained = true;
@@ -370,7 +373,7 @@ impl CalledWords {
     }
 
     /// The bits set.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn load(&self) -> Calls {
         Calls(std::array::from_fn(|at| self.0[at].load(Ordering::Relaxed)))
     }
@@ -1728,8 +1731,17 @@ fn install() {
     unsafe { libc::atexit(exit_handler) };
 }
 
-/// Nothing to register: the runtime is built for unix hosts, whose exit order the hook relies on.
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod windows;
+
+/// Register the shared runtime drain with the host's UCRT.
+#[cfg(windows)]
+fn install() {
+    windows::install();
+}
+
+/// Other targets have no process-exit integration.
+#[cfg(not(any(unix, windows)))]
 fn install() {}
 
 // The GNU C library's `on_exit(3)` (`<stdlib.h>`), which `libc` does not declare: `function` is
@@ -1824,6 +1836,7 @@ fn end_at_once(status: std::ffi::c_int) -> ! {
 /// `making`, [`Guard::close`]), the work's wait gets `bound` from there. `None` (nothing done) in
 /// another process than the one registered; else whether the other sections ended and the work
 /// completed.
+#[cfg(any(unix, windows, test))]
 pub(crate) fn hook(
     guard: &Guard,
     in_process: &InProcessDevices,
@@ -1857,13 +1870,13 @@ pub(crate) fn own() -> usize {
 }
 
 /// The sections of the process's guard that ended.
-#[cfg(test)]
+#[cfg(all(test, any(unix, m2v_gpu, m2v_cpu_icd)))]
 pub(crate) fn sections() -> u64 {
     SECTIONS.load(Ordering::Relaxed)
 }
 
 /// Whether a section that ended called `call`.
-#[cfg(test)]
+#[cfg(all(test, any(unix, m2v_gpu, m2v_cpu_icd)))]
 pub(crate) fn was_called(call: Call) -> bool {
     CALLED.load().holds(call)
 }
